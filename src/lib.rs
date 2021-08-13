@@ -143,7 +143,9 @@ impl TextLines {
     } else {
       byte_index - line.start_index
     };
-    let multi_line_char_offset = line.multi_line_chars.iter()
+    let multi_line_char_offset = line
+      .multi_line_chars
+      .iter()
       .take_while(|(char_index, _)| *char_index < byte_index)
       .map(|(char_index, len)| {
         if char_index + len > byte_index {
@@ -165,13 +167,17 @@ impl TextLines {
   pub fn line_and_column_display(&self, byte_index: usize) -> LineAndColumnDisplay {
     let line_and_column_index = self.line_and_column_index(byte_index);
     let line = &self.lines[line_and_column_index.line_index];
-    let tab_char_count = line.tab_chars.iter()
+    let tab_char_count = line
+      .tab_chars
+      .iter()
       .take_while(|tab_index| **tab_index < byte_index)
       .count();
 
     LineAndColumnDisplay {
       line_number: line_and_column_index.line_index + 1,
-      column_number: line_and_column_index.column_index - tab_char_count + tab_char_count * self.indent_width + 1,
+      column_number: line_and_column_index.column_index - tab_char_count
+        + tab_char_count * self.indent_width
+        + 1,
     }
   }
 
