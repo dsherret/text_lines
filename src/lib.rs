@@ -57,8 +57,8 @@ impl TextLines {
         lines.push(TextLine {
           start_index: last_line_start,
           end_index: if was_last_slash_r { index - 1 } else { index },
-          multi_line_chars: std::mem::replace(&mut multi_line_chars, Vec::new()),
-          tab_chars: std::mem::replace(&mut tab_chars, Vec::new()),
+          multi_line_chars: std::mem::take(&mut multi_line_chars),
+          tab_chars: std::mem::take(&mut tab_chars),
         });
         last_line_start = index + 1;
       } else if c == '\t' {
@@ -155,7 +155,6 @@ impl TextLines {
         }
       })
       .sum::<usize>();
-    println!("{}", multi_line_char_offset);
 
     LineAndColumnIndex {
       line_index,
@@ -337,8 +336,8 @@ mod tests {
     assert_line_start(&info, 3, 8);
   }
 
-  fn assert_line_start(info: &TextLines, line_index: usize, line_end: usize) {
-    assert_eq!(info.line_start(line_index), line_end,);
+  fn assert_line_start(info: &TextLines, line_index: usize, line_start: usize) {
+    assert_eq!(info.line_start(line_index), line_start);
   }
 
   #[test]
