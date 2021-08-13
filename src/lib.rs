@@ -4,7 +4,7 @@ const BOM_CHAR: char = '\u{FEFF}';
 pub struct LineAndColumnIndex {
   /// The zero-indexed line index.
   pub line_index: usize,
-  /// The byte index relative to the start of the line.
+  /// The character index relative to the start of the line.
   pub column_index: usize,
 }
 
@@ -12,23 +12,25 @@ pub struct LineAndColumnIndex {
 pub struct LineAndColumnDisplay {
   /// The 1-indexed line number for display purposes.
   pub line_number: usize,
-  /// The 1-indexed column number
+  /// The 1-indexed column number based on the indent width.
   pub column_number: usize,
 }
 
 struct TextLine {
   start_index: usize,
   end_index: usize,
+  multi_line_chars: Vec<(usize, usize)>,
+  tab_chars: Vec<usize>,
 }
 
 pub struct TextLines {
   lines: Vec<TextLine>,
-  // todo: remove this and instead store the multi-byte char indexes along with tab indexes
-  text: String,
   indent_width: usize,
 }
 
 impl TextLines {
+  /// Creates a new `TextLines` with the specified text and default
+  /// indent width of 4.
   pub fn new(text: &str) -> Self {
     TextLines::with_indent_width(text, 4)
   }
@@ -42,15 +44,27 @@ impl TextLines {
     } else {
       0
     };
+    let mut multi_line_chars = Vec::new();
+    let mut tab_chars = Vec::new();
     let mut lines = Vec::new();
     let mut was_last_slash_r = false;
     for (index, c) in text.char_indices() {
+      if index == 0 && c == BOM_CHAR {
+        continue;
+      }
+
       if c == '\n' {
         lines.push(TextLine {
           start_index: last_line_start,
           end_index: if was_last_slash_r { index - 1 } else { index },
+          multi_line_chars: std::mem::replace(&mut multi_line_chars, Vec::new()),
+          tab_chars: std::mem::replace(&mut tab_chars, Vec::new()),
         });
         last_line_start = index + 1;
+      } else if c == '\t' {
+        tab_chars.push(index);
+      } else if c.len_utf8() > 1 {
+        multi_line_chars.push((index, c.len_utf8()));
       }
       was_last_slash_r = c == '\r';
     }
@@ -58,11 +72,12 @@ impl TextLines {
     lines.push(TextLine {
       start_index: last_line_start,
       end_index: text.len(),
+      multi_line_chars,
+      tab_chars,
     });
 
     Self {
       lines,
-      text: text.to_string(),
       indent_width,
     }
   }
@@ -121,55 +136,42 @@ impl TextLines {
   pub fn line_and_column_index(&self, byte_index: usize) -> LineAndColumnIndex {
     // ensure no panics will happen here in case someone is specifying a byte position in the middle of a char
     let line_index = self.line_index(byte_index);
-    let line_start = self.line_start(line_index);
-    let line_end = self.line_end_with_newline(line_index);
-    let line_text = &self.text[line_start..line_end];
-    let column_index = if byte_index == line_end {
-      line_text.chars().count()
+    let line = &self.lines[line_index];
+
+    let relative_byte_index = if byte_index < line.start_index {
+      0 // could happen when at the BOM position
     } else {
-      line_text
-        .char_indices()
-        .position(|(c_pos, _)| line_start + c_pos >= byte_index)
-        .unwrap()
+      byte_index - line.start_index
     };
+    let multi_line_char_offset = line.multi_line_chars.iter()
+      .take_while(|(char_index, _)| *char_index < byte_index)
+      .map(|(char_index, len)| {
+        if char_index + len > byte_index {
+          byte_index - char_index
+        } else {
+          *len - 1
+        }
+      })
+      .sum::<usize>();
+    println!("{}", multi_line_char_offset);
 
     LineAndColumnIndex {
       line_index,
-      column_index,
+      column_index: relative_byte_index - multi_line_char_offset,
     }
   }
 
   /// Gets the line and column display based on the indentation width and the provided byte index.
   pub fn line_and_column_display(&self, byte_index: usize) -> LineAndColumnDisplay {
     let line_and_column_index = self.line_and_column_index(byte_index);
-    let line_start = self.line_start(line_and_column_index.line_index);
-    let line_end = self.line_end_with_newline(line_and_column_index.line_index);
-    let line_text = &self.text[line_start..line_end];
-
-    let mut count = 0;
-    for (index, c) in line_text.char_indices() {
-      if line_start + index >= byte_index {
-        break;
-      }
-      if c == '\t' {
-        count += self.indent_width;
-      } else {
-        count += 1;
-      }
-    }
+    let line = &self.lines[line_and_column_index.line_index];
+    let tab_char_count = line.tab_chars.iter()
+      .take_while(|tab_index| **tab_index < byte_index)
+      .count();
 
     LineAndColumnDisplay {
       line_number: line_and_column_index.line_index + 1,
-      column_number: count + 1,
-    }
-  }
-
-  fn line_end_with_newline(&self, line_index: usize) -> usize {
-    if line_index + 1 >= self.lines_count() {
-      self.text_length()
-    } else {
-      // better to include the newline portion
-      self.line_start(line_index + 1)
+      column_number: line_and_column_index.column_index - tab_char_count + tab_char_count * self.indent_width + 1,
     }
   }
 
@@ -228,6 +230,24 @@ mod tests {
     assert_line_and_col_index(&info, 7, 1, 1); // <EOF>
   }
 
+  #[test]
+  fn line_and_column_index_multi_byte_chars() {
+    let text = "β1β\nΔβ1";
+    let info = TextLines::new(text);
+    assert_line_and_col_index(&info, 0, 0, 0); // first β index
+    assert_line_and_col_index(&info, 1, 0, 0); // second β index
+    assert_line_and_col_index(&info, 2, 0, 1); // 1
+    assert_line_and_col_index(&info, 3, 0, 2); // first β index
+    assert_line_and_col_index(&info, 4, 0, 2); // second β index
+    assert_line_and_col_index(&info, 5, 0, 3); // \n
+    assert_line_and_col_index(&info, 6, 1, 0); // first Δ index
+    assert_line_and_col_index(&info, 7, 1, 0); // second Δ index
+    assert_line_and_col_index(&info, 8, 1, 1); // first β index
+    assert_line_and_col_index(&info, 9, 1, 1); // second β index
+    assert_line_and_col_index(&info, 10, 1, 2); // 1
+    assert_line_and_col_index(&info, 11, 1, 3); // <EOF>
+  }
+
   fn assert_line_and_col_index(
     info: &TextLines,
     byte_index: usize,
@@ -244,7 +264,7 @@ mod tests {
   }
 
   #[test]
-  fn line_and_column_diplay() {
+  fn line_and_column_display() {
     let text = "\t1\n\t 3\t4";
     let info = TextLines::new(text);
     assert_line_and_col_display(&info, 0, 1, 1); // \t
@@ -259,7 +279,7 @@ mod tests {
   }
 
   #[test]
-  fn line_and_column_diplay_bom() {
+  fn line_and_column_display_bom() {
     let text = "\u{FEFF}\t1";
     let info = TextLines::new(text);
     assert_line_and_col_display(&info, 0, 1, 1); // first BOM index
@@ -271,7 +291,7 @@ mod tests {
   }
 
   #[test]
-  fn line_and_column_diplay_indent_width() {
+  fn line_and_column_display_indent_width() {
     let text = "\t1";
     let info = TextLines::with_indent_width(text, 2);
     assert_line_and_col_display(&info, 0, 1, 1); // \t
