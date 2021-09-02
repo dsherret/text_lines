@@ -1,5 +1,9 @@
 const BOM_CHAR: char = '\u{FEFF}';
 
+#[cfg_attr(
+  feature = "serialization",
+  derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineAndColumnIndex {
   /// The zero-indexed line index.
@@ -8,6 +12,10 @@ pub struct LineAndColumnIndex {
   pub column_index: usize,
 }
 
+#[cfg_attr(
+  feature = "serialization",
+  derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineAndColumnDisplay {
   /// The 1-indexed line number for display purposes.

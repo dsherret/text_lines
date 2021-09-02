@@ -1,7 +1,13 @@
 [package]
 name = "text_lines"
-version = "0.1.2"
+version = "0.2.0"
 authors = ["David Sherret <dsherret@gmail.com>"]
 edition = "2018"
 license = "MIT"
 description = "Information about lines of text in a string."
+
+[features]
+serialization = ["serde"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
