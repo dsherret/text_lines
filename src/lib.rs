@@ -172,6 +172,11 @@ impl TextLines {
 
   /// Gets the line and column display based on the indentation width and the provided byte index.
   pub fn line_and_column_display(&self, byte_index: usize) -> LineAndColumnDisplay {
+    self.line_and_column_display_with_indent_width(byte_index, self.indent_width)
+  }
+
+  /// Gets the line and column display based on the provided byte index and indentation width.
+  pub fn line_and_column_display_with_indent_width(&self, byte_index: usize, indent_width: usize) -> LineAndColumnDisplay {
     let line_and_column_index = self.line_and_column_index(byte_index);
     let line = &self.lines[line_and_column_index.line_index];
     let tab_char_count = line
@@ -183,7 +188,7 @@ impl TextLines {
     LineAndColumnDisplay {
       line_number: line_and_column_index.line_index + 1,
       column_number: line_and_column_index.column_index - tab_char_count
-        + tab_char_count * self.indent_width
+        + tab_char_count * indent_width
         + 1,
     }
   }
@@ -323,6 +328,26 @@ mod tests {
       LineAndColumnDisplay {
         line_number,
         column_number,
+      }
+    );
+  }
+
+  #[test]
+  fn line_and_column_display_with_indent_width() {
+    let text = "\t1\n\t 3\t4";
+    let info = TextLines::new(text);
+    assert_eq!(
+      info.line_and_column_display_with_indent_width(1, 2),
+      LineAndColumnDisplay {
+        line_number: 1,
+        column_number: 3,
+      }
+    );
+    assert_eq!(
+      info.line_and_column_display_with_indent_width(1, 4),
+      LineAndColumnDisplay {
+        line_number: 1,
+        column_number: 5,
       }
     );
   }
