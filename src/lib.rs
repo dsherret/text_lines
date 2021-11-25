@@ -24,13 +24,24 @@ pub struct LineAndColumnDisplay {
   pub column_number: usize,
 }
 
+#[derive(Debug)]
+struct MultiByteCharInfo {
+  /// The byte index in the entire file.
+  byte_index: usize,
+  /// The character index on the current line.
+  line_char_index: usize,
+  length: usize,
+}
+
+#[derive(Debug)]
 struct TextLine {
   start_index: usize,
   end_index: usize,
-  multi_line_chars: Vec<(usize, usize)>,
+  multi_line_chars: Vec<MultiByteCharInfo>,
   tab_chars: Vec<usize>,
 }
 
+#[derive(Debug)]
 pub struct TextLines {
   lines: Vec<TextLine>,
   indent_width: usize,
@@ -56,23 +67,29 @@ impl TextLines {
     let mut tab_chars = Vec::new();
     let mut lines = Vec::new();
     let mut was_last_slash_r = false;
-    for (index, c) in text.char_indices() {
-      if index == 0 && c == BOM_CHAR {
+    let mut line_char_index = 0;
+    for (char_index, (byte_index, c)) in text.char_indices().enumerate() {
+      if byte_index == 0 && c == BOM_CHAR {
         continue;
       }
 
       if c == '\n' {
         lines.push(TextLine {
           start_index: last_line_start,
-          end_index: if was_last_slash_r { index - 1 } else { index },
+          end_index: if was_last_slash_r { byte_index - 1 } else { byte_index },
           multi_line_chars: std::mem::take(&mut multi_line_chars),
           tab_chars: std::mem::take(&mut tab_chars),
         });
-        last_line_start = index + 1;
+        last_line_start = byte_index + 1;
+        line_char_index = char_index + 1;
       } else if c == '\t' {
-        tab_chars.push(index);
+        tab_chars.push(byte_index);
       } else if c.len_utf8() > 1 {
-        multi_line_chars.push((index, c.len_utf8()));
+        multi_line_chars.push(MultiByteCharInfo {
+          line_char_index: char_index - line_char_index,
+          byte_index,
+          length: c.len_utf8(),
+        });
       }
       was_last_slash_r = c == '\r';
     }
@@ -140,6 +157,23 @@ impl TextLines {
     (line.start_index, line.end_index)
   }
 
+  /// Gets the byte position from the provided line and column index.
+  pub fn byte_index(&self, line_and_column: LineAndColumnIndex) -> usize {
+    let line = &self.lines[line_and_column.line_index];
+    let mut byte_index = line.start_index + line_and_column.column_index;
+
+    for char_info in line.multi_line_chars.iter() {
+      if char_info.line_char_index < line_and_column.column_index {
+        // - 1 because the 1 was already added above when adding the column index
+        byte_index += char_info.length - 1;
+      } else {
+        break;
+      }
+    }
+
+    byte_index
+  }
+
   /// Gets the line and column index of the provided byte index.
   pub fn line_and_column_index(&self, byte_index: usize) -> LineAndColumnIndex {
     // ensure no panics will happen here in case someone is specifying a byte position in the middle of a char
@@ -154,12 +188,12 @@ impl TextLines {
     let multi_line_char_offset = line
       .multi_line_chars
       .iter()
-      .take_while(|(char_index, _)| *char_index < byte_index)
-      .map(|(char_index, len)| {
-        if char_index + len > byte_index {
-          byte_index - char_index
+      .take_while(|char_info| char_info.byte_index < byte_index)
+      .map(|char_info| {
+        if char_info.byte_index + char_info.length > byte_index {
+          byte_index - char_info.byte_index
         } else {
-          *len - 1
+          char_info.length - 1
         }
       })
       .sum::<usize>();
@@ -403,6 +437,62 @@ mod tests {
   fn line_end_equal_number_lines() {
     let info = TextLines::new("test");
     info.line_end(1);
+  }
+
+  #[test]
+  fn byte_index() {
+    let text = "12\n3\r\n4\n5";
+    let info = TextLines::new(text);
+    assert_byte_index(&info, 0, 0, 0); // 1
+    assert_byte_index(&info, 0, 1, 1); // 2
+    assert_byte_index(&info, 0, 2, 2); // \n
+    assert_byte_index(&info, 1, 0, 3); // 3
+    assert_byte_index(&info, 1, 1, 4); // \r
+    assert_byte_index(&info, 1, 2, 5); // \n
+    assert_byte_index(&info, 2, 0, 6); // 4
+    assert_byte_index(&info, 2, 1, 7); // \n
+    assert_byte_index(&info, 3, 0, 8); // 5
+    assert_byte_index(&info, 3, 1, 9); // <EOF>
+  }
+
+  #[test]
+  fn byte_index_bom() {
+    let text = "\u{FEFF}12\n3";
+    let info = TextLines::new(text);
+    assert_byte_index(&info, 0, 0, 3); // 1
+    assert_byte_index(&info, 0, 1, 4); // 2
+    assert_byte_index(&info, 0, 2, 5); // \n
+    assert_byte_index(&info, 1, 0, 6); // 3
+    assert_byte_index(&info, 1, 1, 7); // <EOF>
+  }
+
+  #[test]
+  fn byte_index_multi_byte_chars() {
+    let text = "β1β\nΔβ1";
+    let info = TextLines::new(text);
+    assert_byte_index(&info, 0, 0, 0); // first β index
+    assert_byte_index(&info, 0, 1, 2); // 1
+    assert_byte_index(&info, 0, 2, 3); // first β index
+    assert_byte_index(&info, 0, 3, 5); // \n
+    assert_byte_index(&info, 1, 0, 6); // first Δ index
+    assert_byte_index(&info, 1, 1, 8); // first β index
+    assert_byte_index(&info, 1, 2, 10); // 1
+    assert_byte_index(&info, 1, 3, 11); // <EOF>
+  }
+
+  fn assert_byte_index(
+    info: &TextLines,
+    line_index: usize,
+    column_index: usize,
+    byte_index: usize,
+  ) {
+    assert_eq!(
+      info.byte_index(LineAndColumnIndex {
+        line_index,
+        column_index,
+      }),
+      byte_index,
+    );
   }
 
   #[test]

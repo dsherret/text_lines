@@ -12,6 +12,7 @@ let info = TextLines::new(&text); // defaults to an indent width of 4
 
 let line_index = info.line_index(9); // 1
 let line_and_column = info.line_and_column_index(9); // 1, 2
+let byte_index = info.byte_index(&line_and_column); // 9
 let line_and_column_display = info.line_and_column_display(9); // 2, 6
 
 let info = TextLines::with_indent_width(&text, 2);
