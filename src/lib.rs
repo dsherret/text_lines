@@ -171,7 +171,12 @@ impl TextLines {
       }
     }
 
-    byte_index
+    // fallback gracefully to the end index of the line when the column goes off
+    if byte_index > line.end_index {
+      line.end_index
+    } else {
+      byte_index
+    }
   }
 
   /// Gets the line and column index of the provided byte index.
@@ -446,13 +451,17 @@ mod tests {
     assert_byte_index(&info, 0, 0, 0); // 1
     assert_byte_index(&info, 0, 1, 1); // 2
     assert_byte_index(&info, 0, 2, 2); // \n
+    assert_byte_index(&info, 0, 3, 2); // passed the \n
+    assert_byte_index(&info, 0, 4, 2); // passed the \n
     assert_byte_index(&info, 1, 0, 3); // 3
     assert_byte_index(&info, 1, 1, 4); // \r
-    assert_byte_index(&info, 1, 2, 5); // \n
+    assert_byte_index(&info, 1, 2, 4); // \n
+    assert_byte_index(&info, 1, 3, 4); // passed the \r\n
     assert_byte_index(&info, 2, 0, 6); // 4
     assert_byte_index(&info, 2, 1, 7); // \n
     assert_byte_index(&info, 3, 0, 8); // 5
     assert_byte_index(&info, 3, 1, 9); // <EOF>
+    assert_byte_index(&info, 3, 2, 9); // passed the<EOF>
   }
 
   #[test]
