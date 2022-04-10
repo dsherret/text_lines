@@ -37,7 +37,7 @@ struct MultiByteCharInfo {
 struct TextLine {
   start_index: usize,
   end_index: usize,
-  multi_line_chars: Vec<MultiByteCharInfo>,
+  multi_byte_chars: Vec<MultiByteCharInfo>,
   tab_chars: Vec<usize>,
 }
 
@@ -63,7 +63,7 @@ impl TextLines {
     } else {
       0
     };
-    let mut multi_line_chars = Vec::new();
+    let mut multi_byte_chars = Vec::new();
     let mut tab_chars = Vec::new();
     let mut lines = Vec::new();
     let mut was_last_slash_r = false;
@@ -77,7 +77,7 @@ impl TextLines {
         lines.push(TextLine {
           start_index: last_line_start,
           end_index: if was_last_slash_r { byte_index - 1 } else { byte_index },
-          multi_line_chars: std::mem::take(&mut multi_line_chars),
+          multi_byte_chars: std::mem::take(&mut multi_byte_chars),
           tab_chars: std::mem::take(&mut tab_chars),
         });
         last_line_start = byte_index + 1;
@@ -85,7 +85,7 @@ impl TextLines {
       } else if c == '\t' {
         tab_chars.push(byte_index);
       } else if c.len_utf8() > 1 {
-        multi_line_chars.push(MultiByteCharInfo {
+        multi_byte_chars.push(MultiByteCharInfo {
           line_char_index: char_index - line_char_index,
           byte_index,
           length: c.len_utf8(),
@@ -97,7 +97,7 @@ impl TextLines {
     lines.push(TextLine {
       start_index: last_line_start,
       end_index: text.len(),
-      multi_line_chars,
+      multi_byte_chars,
       tab_chars,
     });
 
@@ -162,7 +162,7 @@ impl TextLines {
     let line = &self.lines[line_and_column.line_index];
     let mut byte_index = line.start_index + line_and_column.column_index;
 
-    for char_info in line.multi_line_chars.iter() {
+    for char_info in line.multi_byte_chars.iter() {
       if char_info.line_char_index < line_and_column.column_index {
         // - 1 because the 1 was already added above when adding the column index
         byte_index += char_info.length - 1;
@@ -190,8 +190,8 @@ impl TextLines {
     } else {
       byte_index - line.start_index
     };
-    let multi_line_char_offset = line
-      .multi_line_chars
+    let multi_byte_char_offset = line
+      .multi_byte_chars
       .iter()
       .take_while(|char_info| char_info.byte_index < byte_index)
       .map(|char_info| {
@@ -205,7 +205,7 @@ impl TextLines {
 
     LineAndColumnIndex {
       line_index,
-      column_index: relative_byte_index - multi_line_char_offset,
+      column_index: relative_byte_index - multi_byte_char_offset,
     }
   }
 
