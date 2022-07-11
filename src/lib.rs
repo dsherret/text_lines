@@ -221,6 +221,43 @@ impl TextLines {
     last_byte_index
   }
 
+  /// Gets a character index from the provided byte index.
+  pub fn char_index(&self, byte_index: usize) -> usize {
+    let mut lines = self.lines.iter().peekable();
+    let mut last_char_index = 0;
+    let mut last_byte_index = 0;
+    while let Some(line) = lines.next() {
+      for char_info in &line.multi_byte_chars {
+        if char_info.byte_index >= byte_index {
+          let char_length = byte_index - last_byte_index;
+          return last_char_index + char_length;
+        } else {
+          // move to the position past the character
+          let char_length = char_info.byte_index - last_byte_index;
+          last_byte_index = char_info.byte_index + char_info.length;
+          last_char_index += char_length + 1;
+        }
+      }
+
+      // check the end of the line
+      let line_end = if let Some(next_line) = lines.peek() {
+        next_line.start_index
+      } else {
+        line.end_index
+      };
+      if line_end >= byte_index {
+        let char_length = byte_index - last_byte_index;
+        return last_char_index + char_length;
+      } else {
+        let char_length = line_end - last_byte_index;
+        last_byte_index = line_end;
+        last_char_index += char_length;
+      }
+    }
+
+    last_char_index
+  }
+
   /// Gets the line and column index of the provided byte index.
   pub fn line_and_column_index(&self, byte_index: usize) -> LineAndColumnIndex {
     // ensure no panics will happen here in case someone is specifying a byte position in the middle of a char
@@ -558,15 +595,16 @@ mod tests {
     assert_byte_index_from_char_index(&info, 1, 1); // 2
     assert_byte_index_from_char_index(&info, 2, 2); // 3
     assert_byte_index_from_char_index(&info, 3, 3); // 4
-    assert_byte_index_from_char_index(&info, 4, 4); // 5
-    assert_byte_index_from_char_index(&info, 5, 5); // 6
-    assert_byte_index_from_char_index(&info, 6, 6); // 7
-    assert_byte_index_from_char_index(&info, 7, 7); // \r
-    assert_byte_index_from_char_index(&info, 8, 8); // \n
-    assert_byte_index_from_char_index(&info, 9, 9); // 8
-    assert_byte_index_from_char_index(&info, 10, 10); // \n
-    assert_byte_index_from_char_index(&info, 11, 11); // <EOF>
-    assert_byte_index_from_char_index(&info, 12, 12); // <EOF> + 1
+    assert_byte_index_from_char_index(&info, 4, 4); // \n
+    assert_byte_index_from_char_index(&info, 5, 5); // 5
+    assert_byte_index_from_char_index(&info, 6, 6); // 6
+    assert_byte_index_from_char_index(&info, 7, 7); // 7
+    assert_byte_index_from_char_index(&info, 8, 8); // \r
+    assert_byte_index_from_char_index(&info, 9, 9); // \n
+    assert_byte_index_from_char_index(&info, 10, 10); // 8
+    assert_byte_index_from_char_index(&info, 11, 11); // \n
+    assert_byte_index_from_char_index(&info, 12, 12); // <EOF>
+    assert_byte_index_from_char_index(&info, 13, 12); // <EOF> + 1
   }
 
   #[test]
@@ -591,6 +629,50 @@ mod tests {
 
   fn assert_byte_index_from_char_index(info: &TextLines, char_index: usize, byte_index: usize) {
     assert_eq!(info.byte_index_from_char_index(char_index), byte_index,);
+  }
+
+  #[test]
+  fn char_index() {
+    let text = "1234\n567\r\n8\n";
+    let info = TextLines::new(text);
+    assert_char_index(&info, 0, 0); // 1
+    assert_char_index(&info, 1, 1); // 2
+    assert_char_index(&info, 2, 2); // 3
+    assert_char_index(&info, 3, 3); // 4
+    assert_char_index(&info, 4, 4); // \n
+    assert_char_index(&info, 5, 5); // 5
+    assert_char_index(&info, 6, 6); // 6
+    assert_char_index(&info, 7, 7); // 7
+    assert_char_index(&info, 8, 8); // \r
+    assert_char_index(&info, 9, 9); // \n
+    assert_char_index(&info, 10, 10); // 8
+    assert_char_index(&info, 11, 11); // \n
+    assert_char_index(&info, 12, 12); // <EOF>
+    assert_char_index(&info, 13, 12); // <EOF> + 1
+  }
+
+  #[test]
+  fn char_index_multi_byte_chars() {
+    let text = "β1β\nΔβ1\r\nt\nu";
+    let info = TextLines::new(text);
+    assert_char_index(&info, 0, 0); // β
+    assert_char_index(&info, 2, 1); // 1
+    assert_char_index(&info, 3, 2); // β
+    assert_char_index(&info, 5, 3); // \n
+    assert_char_index(&info, 6, 4); // Δ
+    assert_char_index(&info, 8, 5); // β
+    assert_char_index(&info, 10, 6); // 1
+    assert_char_index(&info, 11, 7); // \r
+    assert_char_index(&info, 12, 8); // \n
+    assert_char_index(&info, 13, 9); // t
+    assert_char_index(&info, 14, 10); // \n
+    assert_char_index(&info, 15, 11); // u
+    assert_char_index(&info, 16, 12); // <EOF>
+    assert_char_index(&info, 17, 12); // <EOF> + 1
+  }
+
+  fn assert_char_index(info: &TextLines, char_index: usize, byte_index: usize) {
+    assert_eq!(info.char_index(char_index), byte_index,);
   }
 
   #[test]
