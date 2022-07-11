@@ -76,7 +76,11 @@ impl TextLines {
       if c == '\n' {
         lines.push(TextLine {
           start_index: last_line_start,
-          end_index: if was_last_slash_r { byte_index - 1 } else { byte_index },
+          end_index: if was_last_slash_r {
+            byte_index - 1
+          } else {
+            byte_index
+          },
           multi_byte_chars: std::mem::take(&mut multi_byte_chars),
           tab_chars: std::mem::take(&mut tab_chars),
         });
@@ -119,7 +123,7 @@ impl TextLines {
 
   /// Gets the line index from a byte index.
   /// Note that if you provide the middle byte index of a \r\n newline
-  /// then it will return the index of the line the preceding line.
+  /// then it will return the index of the preceding line.
   pub fn line_index(&self, byte_index: usize) -> usize {
     self.assert_valid_byte_index(byte_index);
 
@@ -179,6 +183,44 @@ impl TextLines {
     }
   }
 
+  /// Gets a byte index from the provided character index.
+  pub fn byte_index_from_char_index(&self, char_index: usize) -> usize {
+    let mut last_char_index = 0;
+    let mut last_byte_index = 0;
+
+    let mut lines = self.lines.iter().peekable();
+    while let Some(line) = lines.next() {
+      for char_info in &line.multi_byte_chars {
+        let char_length = char_info.byte_index - last_byte_index;
+        if last_char_index + char_length >= char_index {
+          let byte_diff = char_index - last_char_index;
+          return last_byte_index + byte_diff;
+        } else {
+          // move to the position past the character
+          last_byte_index = char_info.byte_index + char_info.length;
+          last_char_index += char_length + 1;
+        }
+      }
+
+      // check the end of the line
+      let line_end = if let Some(next_line) = lines.peek() {
+        next_line.start_index
+      } else {
+        line.end_index
+      };
+      let char_length = line_end - last_byte_index;
+      if last_char_index + char_length >= char_index {
+        let byte_diff = char_index - last_char_index;
+        return last_byte_index + byte_diff;
+      } else {
+        last_byte_index = line_end;
+        last_char_index += char_length;
+      }
+    }
+
+    last_byte_index
+  }
+
   /// Gets the line and column index of the provided byte index.
   pub fn line_and_column_index(&self, byte_index: usize) -> LineAndColumnIndex {
     // ensure no panics will happen here in case someone is specifying a byte position in the middle of a char
@@ -215,7 +257,11 @@ impl TextLines {
   }
 
   /// Gets the line and column display based on the provided byte index and indentation width.
-  pub fn line_and_column_display_with_indent_width(&self, byte_index: usize, indent_width: usize) -> LineAndColumnDisplay {
+  pub fn line_and_column_display_with_indent_width(
+    &self,
+    byte_index: usize,
+    indent_width: usize,
+  ) -> LineAndColumnDisplay {
     let line_and_column_index = self.line_and_column_index(byte_index);
     let line = &self.lines[line_and_column_index.line_index];
     let tab_char_count = line
@@ -502,6 +548,49 @@ mod tests {
       }),
       byte_index,
     );
+  }
+
+  #[test]
+  fn byte_index_from_char_index() {
+    let text = "1234\n567\r\n8\n";
+    let info = TextLines::new(text);
+    assert_byte_index_from_char_index(&info, 0, 0); // 1
+    assert_byte_index_from_char_index(&info, 1, 1); // 2
+    assert_byte_index_from_char_index(&info, 2, 2); // 3
+    assert_byte_index_from_char_index(&info, 3, 3); // 4
+    assert_byte_index_from_char_index(&info, 4, 4); // 5
+    assert_byte_index_from_char_index(&info, 5, 5); // 6
+    assert_byte_index_from_char_index(&info, 6, 6); // 7
+    assert_byte_index_from_char_index(&info, 7, 7); // \r
+    assert_byte_index_from_char_index(&info, 8, 8); // \n
+    assert_byte_index_from_char_index(&info, 9, 9); // 8
+    assert_byte_index_from_char_index(&info, 10, 10); // \n
+    assert_byte_index_from_char_index(&info, 11, 11); // <EOF>
+    assert_byte_index_from_char_index(&info, 12, 12); // <EOF> + 1
+  }
+
+  #[test]
+  fn byte_index_from_char_index_multi_byte_chars() {
+    let text = "β1β\nΔβ1\r\nt\nu";
+    let info = TextLines::new(text);
+    assert_byte_index_from_char_index(&info, 0, 0); // β
+    assert_byte_index_from_char_index(&info, 1, 2); // 1
+    assert_byte_index_from_char_index(&info, 2, 3); // β
+    assert_byte_index_from_char_index(&info, 3, 5); // \n
+    assert_byte_index_from_char_index(&info, 4, 6); // Δ
+    assert_byte_index_from_char_index(&info, 5, 8); // β
+    assert_byte_index_from_char_index(&info, 6, 10); // 1
+    assert_byte_index_from_char_index(&info, 7, 11); // \r
+    assert_byte_index_from_char_index(&info, 8, 12); // \n
+    assert_byte_index_from_char_index(&info, 9, 13); // t
+    assert_byte_index_from_char_index(&info, 10, 14); // \n
+    assert_byte_index_from_char_index(&info, 11, 15); // u
+    assert_byte_index_from_char_index(&info, 12, 16); // <EOF>
+    assert_byte_index_from_char_index(&info, 13, 16); // <EOF> + 1
+  }
+
+  fn assert_byte_index_from_char_index(info: &TextLines, char_index: usize, byte_index: usize) {
+    assert_eq!(info.byte_index_from_char_index(char_index), byte_index,);
   }
 
   #[test]
