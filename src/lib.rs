@@ -76,7 +76,11 @@ impl TextLines {
       if c == '\n' {
         lines.push(TextLine {
           start_index: last_line_start,
-          end_index: if was_last_slash_r { byte_index - 1 } else { byte_index },
+          end_index: if was_last_slash_r {
+            byte_index - 1
+          } else {
+            byte_index
+          },
           multi_byte_chars: std::mem::take(&mut multi_byte_chars),
           tab_chars: std::mem::take(&mut tab_chars),
         });
@@ -186,14 +190,14 @@ impl TextLines {
 
     let mut lines = self.lines.iter().peekable();
     while let Some(line) = lines.next() {
-      for char in &line.multi_byte_chars {
-        let char_length = char.byte_index - last_byte_index;
+      for char_info in &line.multi_byte_chars {
+        let char_length = char_info.byte_index - last_byte_index;
         if last_char_index + char_length >= char_index {
           let byte_diff = char_index - last_char_index;
           return last_byte_index + byte_diff;
         } else {
           // move to the position past the character
-          last_byte_index = char.byte_index + char.length;
+          last_byte_index = char_info.byte_index + char_info.length;
           last_char_index += char_length + 1;
         }
       }
@@ -253,7 +257,11 @@ impl TextLines {
   }
 
   /// Gets the line and column display based on the provided byte index and indentation width.
-  pub fn line_and_column_display_with_indent_width(&self, byte_index: usize, indent_width: usize) -> LineAndColumnDisplay {
+  pub fn line_and_column_display_with_indent_width(
+    &self,
+    byte_index: usize,
+    indent_width: usize,
+  ) -> LineAndColumnDisplay {
     let line_and_column_index = self.line_and_column_index(byte_index);
     let line = &self.lines[line_and_column_index.line_index];
     let tab_char_count = line
@@ -581,15 +589,8 @@ mod tests {
     assert_byte_index_from_char_index(&info, 13, 16); // <EOF> + 1
   }
 
-  fn assert_byte_index_from_char_index(
-    info: &TextLines,
-    char_index: usize,
-    byte_index: usize,
-  ) {
-    assert_eq!(
-      info.byte_index_from_char_index(char_index),
-      byte_index,
-    );
+  fn assert_byte_index_from_char_index(info: &TextLines, char_index: usize, byte_index: usize) {
+    assert_eq!(info.byte_index_from_char_index(char_index), byte_index,);
   }
 
   #[test]
