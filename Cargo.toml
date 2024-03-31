@@ -5,6 +5,7 @@ authors = ["David Sherret <dsherret@gmail.com>"]
 edition = "2018"
 license = "MIT"
 description = "Information about lines of text in a string."
+repository = "https://github.com/dsherret/text_lines"
 
 [features]
 serialization = ["serde"]
