@@ -30,6 +30,9 @@ struct MultiByteCharInfo {
   byte_index: usize,
   /// The character index on the current line.
   line_char_index: usize,
+  /// The UTF-16 code unit index on the current line.
+  line_utf16_index: usize,
+  /// The length in bytes.
   length: usize,
 }
 
@@ -68,7 +71,9 @@ impl TextLines {
     let mut lines = Vec::new();
     let mut was_last_slash_r = false;
     let mut line_char_index = 0;
-    for (char_index, (byte_index, c)) in text.char_indices().enumerate() {
+    // the number of utf-16 surrogate pairs on the line so far
+    let mut line_surrogate_pair_count = 0;
+    for (byte_index, c) in text.char_indices() {
       if byte_index == 0 && c == BOM_CHAR {
         continue;
       }
@@ -85,15 +90,23 @@ impl TextLines {
           tab_chars: std::mem::take(&mut tab_chars),
         });
         last_line_start = byte_index + 1;
-        line_char_index = char_index + 1;
-      } else if c == '\t' {
-        tab_chars.push(byte_index);
-      } else if c.len_utf8() > 1 {
-        multi_byte_chars.push(MultiByteCharInfo {
-          line_char_index: char_index - line_char_index,
-          byte_index,
-          length: c.len_utf8(),
-        });
+        line_char_index = 0;
+        line_surrogate_pair_count = 0;
+      } else {
+        if c == '\t' {
+          tab_chars.push(byte_index);
+        } else if c.len_utf8() > 1 {
+          multi_byte_chars.push(MultiByteCharInfo {
+            byte_index,
+            line_char_index,
+            line_utf16_index: line_char_index + line_surrogate_pair_count,
+            length: c.len_utf8(),
+          });
+          if c.len_utf16() == 2 {
+            line_surrogate_pair_count += 1;
+          }
+        }
+        line_char_index += 1;
       }
       was_last_slash_r = c == '\r';
     }
@@ -164,23 +177,21 @@ impl TextLines {
   /// Gets the byte position from the provided line and column index.
   pub fn byte_index(&self, line_and_column: LineAndColumnIndex) -> usize {
     let line = &self.lines[line_and_column.line_index];
-    let mut byte_index = line.start_index + line_and_column.column_index;
-
-    for char_info in line.multi_byte_chars.iter() {
-      if char_info.line_char_index < line_and_column.column_index {
-        // - 1 because the 1 was already added above when adding the column index
-        byte_index += char_info.length - 1;
-      } else {
-        break;
+    let column_index = line_and_column.column_index;
+    let prev_char_count = line
+      .multi_byte_chars
+      .partition_point(|char_info| char_info.line_char_index < column_index);
+    let byte_index = match prev_char_count.checked_sub(1) {
+      Some(prev_char_index) => {
+        let prev_char = &line.multi_byte_chars[prev_char_index];
+        // the remaining characters until the column are single byte
+        prev_char.end_byte_index() + (column_index - prev_char.line_char_index - 1)
       }
-    }
+      None => line.start_index + column_index,
+    };
 
     // fallback gracefully to the end index of the line when the column goes off
-    if byte_index > line.end_index {
-      line.end_index
-    } else {
-      byte_index
-    }
+    byte_index.min(line.end_index)
   }
 
   /// Gets a byte index from the provided character index.
@@ -260,31 +271,10 @@ impl TextLines {
 
   /// Gets the line and column index of the provided byte index.
   pub fn line_and_column_index(&self, byte_index: usize) -> LineAndColumnIndex {
-    // ensure no panics will happen here in case someone is specifying a byte position in the middle of a char
     let line_index = self.line_index(byte_index);
-    let line = &self.lines[line_index];
-
-    let relative_byte_index = if byte_index < line.start_index {
-      0 // could happen when at the BOM position
-    } else {
-      byte_index - line.start_index
-    };
-    let multi_byte_char_offset = line
-      .multi_byte_chars
-      .iter()
-      .take_while(|char_info| char_info.byte_index < byte_index)
-      .map(|char_info| {
-        if char_info.byte_index + char_info.length > byte_index {
-          byte_index - char_info.byte_index
-        } else {
-          char_info.length - 1
-        }
-      })
-      .sum::<usize>();
-
     LineAndColumnIndex {
       line_index,
-      column_index: relative_byte_index - multi_byte_char_offset,
+      column_index: self.lines[line_index].column_indexes(byte_index).char_index,
     }
   }
 
@@ -296,19 +286,12 @@ impl TextLines {
   /// two UTF-16 code units. A byte index in the middle of a character resolves
   /// to the start of that character.
   pub fn line_and_column_index_utf16(&self, byte_index: usize) -> LineAndColumnIndex {
-    let line_and_column_index = self.line_and_column_index(byte_index);
-    let line = &self.lines[line_and_column_index.line_index];
-    // a char is 4 bytes in utf-8 exactly when it's a surrogate pair in utf-16
-    let surrogate_pair_count = line
-      .multi_byte_chars
-      .iter()
-      .take_while(|char_info| char_info.byte_index + char_info.length <= byte_index)
-      .filter(|char_info| char_info.length == 4)
-      .count();
-
+    let line_index = self.line_index(byte_index);
     LineAndColumnIndex {
-      line_index: line_and_column_index.line_index,
-      column_index: line_and_column_index.column_index + surrogate_pair_count,
+      line_index,
+      column_index: self.lines[line_index]
+        .column_indexes(byte_index)
+        .utf16_index,
     }
   }
 
@@ -327,9 +310,7 @@ impl TextLines {
     let line = &self.lines[line_and_column_index.line_index];
     let tab_char_count = line
       .tab_chars
-      .iter()
-      .take_while(|tab_index| **tab_index < byte_index)
-      .count();
+      .partition_point(|tab_index| *tab_index < byte_index);
 
     LineAndColumnDisplay {
       line_number: line_and_column_index.line_index + 1,
@@ -357,6 +338,61 @@ impl TextLines {
         self.lines.len()
       );
     }
+  }
+}
+
+struct ColumnIndexes {
+  char_index: usize,
+  utf16_index: usize,
+}
+
+impl TextLine {
+  /// Gets the column indexes of the provided byte index on this line.
+  ///
+  /// A byte index in the middle of a character resolves to the start of
+  /// that character.
+  fn column_indexes(&self, byte_index: usize) -> ColumnIndexes {
+    let prev_char_count = self
+      .multi_byte_chars
+      .partition_point(|char_info| char_info.byte_index < byte_index);
+    match prev_char_count.checked_sub(1) {
+      Some(prev_char_index) => {
+        let prev_char = &self.multi_byte_chars[prev_char_index];
+        let prev_char_end = prev_char.end_byte_index();
+        if byte_index < prev_char_end {
+          ColumnIndexes {
+            char_index: prev_char.line_char_index,
+            utf16_index: prev_char.line_utf16_index,
+          }
+        } else {
+          // the remaining characters until the byte index are single byte
+          let single_byte_count = byte_index - prev_char_end;
+          ColumnIndexes {
+            char_index: prev_char.line_char_index + 1 + single_byte_count,
+            utf16_index: prev_char.line_utf16_index + prev_char.utf16_len() + single_byte_count,
+          }
+        }
+      }
+      None => {
+        // the byte index is before the start index when it's in the BOM
+        let single_byte_count = byte_index.saturating_sub(self.start_index);
+        ColumnIndexes {
+          char_index: single_byte_count,
+          utf16_index: single_byte_count,
+        }
+      }
+    }
+  }
+}
+
+impl MultiByteCharInfo {
+  fn end_byte_index(&self) -> usize {
+    self.byte_index + self.length
+  }
+
+  fn utf16_len(&self) -> usize {
+    // a char is 4 bytes in utf-8 exactly when it's a surrogate pair in utf-16
+    if self.length == 4 { 2 } else { 1 }
   }
 }
 
@@ -463,17 +499,35 @@ mod tests {
   }
 
   #[test]
-  fn line_and_column_index_utf16_matches_encode_utf16() {
-    let text = "a😀β\tc\n\u{10FFFF}xΔ😀\r\n\n😀";
-    let info = TextLines::new(text);
-    for (byte_index, _) in text
-      .char_indices()
-      .chain(std::iter::once((text.len(), ' ')))
-    {
-      let line_index = info.line_index(byte_index);
-      let line_start = info.line_start(line_index);
-      let expected_column = text[line_start..byte_index].encode_utf16().count();
-      assert_line_and_col_index_utf16(&info, byte_index, line_index, expected_column);
+  fn line_and_column_indexes_match_naive_implementation() {
+    for text in [
+      "a😀β\tc\n\u{10FFFF}xΔ😀\r\n\n😀",
+      "\u{FEFF}β😀1\r\n\t😀Δ\n",
+      "ascii only\nlines",
+    ] {
+      let info = TextLines::new(text);
+      for byte_index in 0..=text.len() {
+        let line_index = info.line_index(byte_index);
+        let line_start = info.line_start(line_index);
+        // a byte index in the middle of a char resolves to the start of that char
+        let char_start = (0..=byte_index)
+          .rev()
+          .find(|i| text.is_char_boundary(*i))
+          .unwrap()
+          .max(line_start);
+        let line_text = &text[line_start..char_start];
+        assert_line_and_col_index(&info, byte_index, line_index, line_text.chars().count());
+        assert_line_and_col_index_utf16(
+          &info,
+          byte_index,
+          line_index,
+          line_text.encode_utf16().count(),
+        );
+        let is_in_line = byte_index >= line_start && byte_index <= info.line_end(line_index);
+        if char_start == byte_index && is_in_line {
+          assert_byte_index(&info, line_index, line_text.chars().count(), byte_index);
+        }
+      }
     }
   }
 
@@ -645,6 +699,17 @@ mod tests {
     assert_byte_index(&info, 0, 2, 5); // \n
     assert_byte_index(&info, 1, 0, 6); // 3
     assert_byte_index(&info, 1, 1, 7); // <EOF>
+  }
+
+  #[test]
+  fn byte_index_bom_multi_byte_chars() {
+    let text = "\u{FEFF}β1\nβ";
+    let info = TextLines::new(text);
+    assert_byte_index(&info, 0, 0, 3); // first β index
+    assert_byte_index(&info, 0, 1, 5); // 1
+    assert_byte_index(&info, 0, 2, 6); // \n
+    assert_byte_index(&info, 1, 0, 7); // first β index
+    assert_byte_index(&info, 1, 1, 9); // <EOF>
   }
 
   #[test]
