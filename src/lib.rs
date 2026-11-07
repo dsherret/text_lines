@@ -288,6 +288,30 @@ impl TextLines {
     }
   }
 
+  /// Gets the line and column index of the provided byte index where the
+  /// column index is the number of UTF-16 code units from the start of the line.
+  ///
+  /// This differs from `line_and_column_index` for characters outside the
+  /// Basic Multilingual Plane (ex. emojis), which are a single character, but
+  /// two UTF-16 code units. A byte index in the middle of a character resolves
+  /// to the start of that character.
+  pub fn line_and_column_index_utf16(&self, byte_index: usize) -> LineAndColumnIndex {
+    let line_and_column_index = self.line_and_column_index(byte_index);
+    let line = &self.lines[line_and_column_index.line_index];
+    // a char is 4 bytes in utf-8 exactly when it's a surrogate pair in utf-16
+    let surrogate_pair_count = line
+      .multi_byte_chars
+      .iter()
+      .take_while(|char_info| char_info.byte_index + char_info.length <= byte_index)
+      .filter(|char_info| char_info.length == 4)
+      .count();
+
+    LineAndColumnIndex {
+      line_index: line_and_column_index.line_index,
+      column_index: line_and_column_index.column_index + surrogate_pair_count,
+    }
+  }
+
   /// Gets the line and column display based on the indentation width and the provided byte index.
   pub fn line_and_column_display(&self, byte_index: usize) -> LineAndColumnDisplay {
     self.line_and_column_display_with_indent_width(byte_index, self.indent_width)
@@ -396,6 +420,71 @@ mod tests {
   ) {
     assert_eq!(
       info.line_and_column_index(byte_index),
+      LineAndColumnIndex {
+        line_index,
+        column_index,
+      }
+    );
+  }
+
+  #[test]
+  fn line_and_column_index_utf16() {
+    // 😀 is 4 bytes in utf-8 and 2 code units in utf-16, β is 2 bytes and 1 code unit
+    let text = "a😀b\r\nβ😀😀\n😀";
+    let info = TextLines::new(text);
+    assert_line_and_col_index_utf16(&info, 0, 0, 0); // a
+    assert_line_and_col_index_utf16(&info, 1, 0, 1); // first 😀 index
+    assert_line_and_col_index_utf16(&info, 2, 0, 1); // second 😀 index
+    assert_line_and_col_index_utf16(&info, 3, 0, 1); // third 😀 index
+    assert_line_and_col_index_utf16(&info, 4, 0, 1); // fourth 😀 index
+    assert_line_and_col_index_utf16(&info, 5, 0, 3); // b
+    assert_line_and_col_index_utf16(&info, 6, 0, 4); // \r
+    assert_line_and_col_index_utf16(&info, 7, 0, 5); // \n
+    assert_line_and_col_index_utf16(&info, 8, 1, 0); // first β index
+    assert_line_and_col_index_utf16(&info, 9, 1, 0); // second β index
+    assert_line_and_col_index_utf16(&info, 10, 1, 1); // first 😀 index
+    assert_line_and_col_index_utf16(&info, 13, 1, 1); // fourth 😀 index
+    assert_line_and_col_index_utf16(&info, 14, 1, 3); // first 😀 index
+    assert_line_and_col_index_utf16(&info, 17, 1, 3); // fourth 😀 index
+    assert_line_and_col_index_utf16(&info, 18, 1, 5); // \n
+    assert_line_and_col_index_utf16(&info, 19, 2, 0); // first 😀 index
+    assert_line_and_col_index_utf16(&info, 23, 2, 2); // <EOF>
+  }
+
+  #[test]
+  fn line_and_column_index_utf16_bom() {
+    let text = "\u{FEFF}😀1";
+    let info = TextLines::new(text);
+    assert_line_and_col_index_utf16(&info, 0, 0, 0); // first BOM index
+    assert_line_and_col_index_utf16(&info, 2, 0, 0); // third BOM index
+    assert_line_and_col_index_utf16(&info, 3, 0, 0); // first 😀 index
+    assert_line_and_col_index_utf16(&info, 7, 0, 2); // 1
+    assert_line_and_col_index_utf16(&info, 8, 0, 3); // <EOF>
+  }
+
+  #[test]
+  fn line_and_column_index_utf16_matches_encode_utf16() {
+    let text = "a😀β\tc\n\u{10FFFF}xΔ😀\r\n\n😀";
+    let info = TextLines::new(text);
+    for (byte_index, _) in text
+      .char_indices()
+      .chain(std::iter::once((text.len(), ' ')))
+    {
+      let line_index = info.line_index(byte_index);
+      let line_start = info.line_start(line_index);
+      let expected_column = text[line_start..byte_index].encode_utf16().count();
+      assert_line_and_col_index_utf16(&info, byte_index, line_index, expected_column);
+    }
+  }
+
+  fn assert_line_and_col_index_utf16(
+    info: &TextLines,
+    byte_index: usize,
+    line_index: usize,
+    column_index: usize,
+  ) {
+    assert_eq!(
+      info.line_and_column_index_utf16(byte_index),
       LineAndColumnIndex {
         line_index,
         column_index,
